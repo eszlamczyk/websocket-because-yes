@@ -7,6 +7,8 @@ import select
 
 from ws_util import *
 
+from websocket import WebSocket
+
 TCP_IP = '127.0.0.1'
 TCP_PORT = 5006
 
@@ -50,7 +52,6 @@ def main():
                 print('\n\n\nHandling main door socket')
                 handle_new_connection(tcp_socket, input_sockets)
             elif ready_socket in ws_sockets:
-                print('this is where we would handle the websocket message')
                 handle_websocket_message(ready_socket, input_sockets,
                                          ws_sockets)
             else:
@@ -66,21 +67,22 @@ def handle_new_connection(main_door_socket: socket.socket, input_sockets: list[s
 
 def handle_websocket_message(client_socket, input_sockets, ws_sockets):
 
-    print('Handling WS message from client socket:', client_socket.fileno())
+    data_in_bytes = client_socket.recv(BUFFER_SIZE)
 
-    message = b''
+    websocket = WebSocket()
 
-    while True:
+    try:
 
-        data_in_bytes = client_socket.recv(BUFFER_SIZE)
+        websocket.get_frame_from_data(data_in_bytes)
 
-        print('received', len(data_in_bytes), 'bytes')
+    except ValueError as err:
+        print(err)
 
-        if len(data_in_bytes) == 0:
+    print(
+        f"Recieved Websocket Message!\nLength {websocket.get_payload_length()}")
 
-            close_socket(client_socket, input_sockets, ws_sockets)
-
-            return
+    print(
+        f"Data: {websocket.get_payload_data()}")
 
 
 def handle_request(client_socket: socket.socket, input_sockets: list[socket.socket], ws_sockets: list[socket.socket]):
