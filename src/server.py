@@ -5,9 +5,9 @@ HTTP server to listen on a port and respond
 import socket
 import select
 
-from ws_util import *
+from src.ws_util import *
 
-from websocket import WebSocket
+from src.websocket import WebSocketFrame
 
 TCP_IP = '127.0.0.1'
 TCP_PORT = 5006
@@ -69,20 +69,10 @@ def handle_websocket_message(client_socket, input_sockets, ws_sockets):
 
     data_in_bytes = client_socket.recv(BUFFER_SIZE)
 
-    websocket = WebSocket()
-
-    try:
-
-        websocket.get_frame_from_data(data_in_bytes)
-
-    except ValueError as err:
-        print(err)
+    websocket = WebSocketFrame.frame_from_data(data_in_bytes)
 
     print(
-        f"Recieved Websocket Message!\nLength {websocket.get_payload_length()}")
-
-    print(
-        f"Data: {websocket.get_payload_data()}")
+        f"Recieved Websocket Message!\n\n{websocket}")
 
 
 def handle_request(client_socket: socket.socket, input_sockets: list[socket.socket], ws_sockets: list[socket.socket]):
