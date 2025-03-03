@@ -65,7 +65,7 @@ def is_valid_ws_handshake_request(method, http_version, headers_map):
             and includes_upgrade
             and includes_connection
             and includes_websocket_key
-            and includes_websocket_key)
+            and includes_websocket_version)
 
 
 def generate_sec_websocket_accept(sec_websocket_key):
