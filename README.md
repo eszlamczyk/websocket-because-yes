@@ -45,6 +45,6 @@ The server *very robustly* logs connections and recieved messages :)
 
 Tests are implemented with `unittest`, to start them:
 
-```txt
+```sh
 python3 -m unittest discover test -p "test_*.py"
 ```
