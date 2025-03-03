@@ -13,10 +13,12 @@ Only numpy :) *(tested on 1.26.4)*
 
 ## Usage:
 
+### Demonstration:
+
 Run `server.py` file:
 
 ```txt
-python3 src/server.py
+python3 -m src.server
 ```
 
 From (for example) console in web browser connect to the server:
@@ -38,3 +40,11 @@ socket.send(new Uint8Array([72, 101, 108, 108, 111]));
 ```
 
 The server *very robustly* logs connections and recieved messages :)
+
+### Tests:
+
+Tests are implemented with `unittest`, to start them:
+
+```txt
+python3 -m unittest discover test -p "test_*.py"
+```
