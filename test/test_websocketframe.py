@@ -4,7 +4,7 @@ import numpy as np
 from src.websocket import WebSocketFrame
 
 
-class TestRecieveFrame(unittest.TestCase):
+class TestFrameFromData(unittest.TestCase):
 
     def test_single_frame_unmasked_text_message(self):
         message = [0x81, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]
@@ -134,6 +134,145 @@ class TestRecieveFrame(unittest.TestCase):
         frame = WebSocketFrame.frame_from_data(message)
 
         self.assertEqual(frame, expected)
+
+
+class TestDataFromFrame(unittest.TestCase):
+
+    def test_single_frame_unmasked_text_message(self):
+        frame = WebSocketFrame(
+            fin=True, opcode=1, payload_length=5, payload_data=[0x48, 0x65, 0x6c, 0x6c, 0x6f]
+        )
+
+        expected = [0x81, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]
+
+        result = frame.data_from_frame()
+
+        self.assertEqual(result, expected)
+
+    def test_single_frame_masked_text_message(self):
+        frame = WebSocketFrame(
+            fin=True, opcode=1, payload_length=5, payload_data=[0x48, 0x65, 0x6c, 0x6c, 0x6f],
+            mask=True, masking_key=[0x37, 0xfa, 0x21, 0x3d]
+        )
+
+        expected = [0x81, 0x85, 0x37, 0xfa, 0x21,
+                    0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58]
+
+        result = frame.data_from_frame()
+
+        self.assertEqual(result, expected)
+
+    def test_fragmented_unmasked_text_message(self):
+        frames = [
+            WebSocketFrame(
+                fin=False, opcode=1, payload_length=3, payload_data=[0x48, 0x65, 0x6c]
+            ),
+            WebSocketFrame(
+                opcode=0, payload_length=2, payload_data=[0x6c, 0x6f]
+            )
+        ]
+
+        expected_messages = [
+            [0x01, 0x03, 0x48, 0x65, 0x6c], [0x80, 0x02, 0x6c, 0x6f]]
+
+        for frame, expected_message in zip(frames, expected_messages):
+            result = frame.data_from_frame()
+
+            self.assertEqual(result, expected_message)
+
+    def test_ping(self):
+        frame = WebSocketFrame(
+            opcode=9, payload_length=5, payload_data=[0x48, 0x65, 0x6c, 0x6c, 0x6f]
+        )
+
+        expected = [0x89, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]
+
+        result = frame.data_from_frame()
+
+        self.assertEqual(result, expected)
+
+    def test_masked_pong(self):
+        frame = WebSocketFrame(
+            opcode=10, payload_length=5, payload_data=[0x48, 0x65, 0x6c, 0x6c, 0x6f],
+            mask=True, masking_key=[0x37, 0xfa, 0x21, 0x3d]
+        )
+
+        expected = [0x8a, 0x85, 0x37, 0xfa, 0x21,
+                    0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58]
+
+        result = frame.data_from_frame()
+
+        self.assertEqual(result, expected)
+
+    def test_extended_payload_length(self):
+        '''
+        this test is for 7 + 16 bits of frame length
+        '''
+        long_binary_message_in_bytes = np.random.randint(0, 16, 256).tolist()
+
+        frame = WebSocketFrame(
+            opcode=2, payload_length=256, payload_data=long_binary_message_in_bytes
+        )
+
+        expected = [0x82, 0x7E, 0x01, 0x00] + long_binary_message_in_bytes
+
+        result = frame.data_from_frame()
+
+        self.assertEqual(result, expected)
+
+    def test_more_extended_payload_length(self):
+        '''
+        this test is for 7 + 64 bits of frame length
+        '''
+        long_binary_message_in_bytes = np.random.randint(
+            0, 16, 65536).tolist()  # 64KiB
+
+        frame = WebSocketFrame(
+            opcode=2, payload_length=65536, payload_data=long_binary_message_in_bytes
+        )
+
+        expected = [0x82, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x01, 0x00, 0x00] + long_binary_message_in_bytes
+
+        result = frame.data_from_frame()
+
+        self.assertEqual(result, expected)
+
+    def test_RSV1_inserting(self):
+
+        frame = WebSocketFrame(
+            opcode=1, payload_length=5, payload_data=[0x48, 0x65, 0x6c, 0x6c, 0x6f], RSV1=True
+        )
+
+        expected = [0xc1, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]
+
+        result = frame.data_from_frame()
+
+        self.assertEqual(result, expected)
+
+    def test_RSV2_inserting(self):
+
+        frame = WebSocketFrame(
+            opcode=1, payload_length=5, payload_data=[0x48, 0x65, 0x6c, 0x6c, 0x6f], RSV2=True
+        )
+
+        expected = [0xa1, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]
+
+        result = frame.data_from_frame()
+
+        self.assertEqual(result, expected)
+
+    def test_RSV3_inserting(self):
+
+        frame = WebSocketFrame(
+            opcode=1, payload_length=5, payload_data=[0x48, 0x65, 0x6c, 0x6c, 0x6f], RSV3=True
+        )
+
+        expected = [0x91, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]
+
+        result = frame.data_from_frame()
+
+        self.assertEqual(result, expected)
 
 
 class TestDecodeFrame(unittest.TestCase):
