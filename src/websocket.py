@@ -36,6 +36,17 @@ class WebSocketFrame:
         frame.__parse_payload(data_in_bytes)
         return frame
 
+    def __apply_masking(self, data):
+        decoded_data = []
+        if self.mask:
+            for byte, data in enumerate(data):
+                decoded_data.append(data ^ self.masking_key[byte % 4])
+            payload_data = bytes(decoded_data)
+        else:
+            payload_data = bytes(data)
+
+        return payload_data
+
     def __create_bool_from_byte_and_mask(self, byte, mask):
         return (byte & mask) == mask
 
@@ -88,21 +99,12 @@ class WebSocketFrame:
             self.data_start = self.masking_key_start
 
     def __parse_payload(self, data_in_bytes):
-        payload_data = b''
-
         if self.payload_length == 0:
-            self.payload_data = payload_data
+            self.payload_data = b''
             return
 
-        decoded_data = []
-        if self.mask:
-            for byte, data in enumerate(data_in_bytes[self.data_start:]):
-                decoded_data.append(data ^ self.masking_key[byte % 4])
-            payload_data = bytes(decoded_data)
-        else:
-            payload_data = bytes(data_in_bytes[self.data_start:])
-
-        self.payload_data = payload_data
+        self.payload_data = self.__apply_masking(
+            data_in_bytes[self.data_start:])
 
     def parse_payload_acording_to_opcode(self):
         if self.opcode == 1:
@@ -111,8 +113,45 @@ class WebSocketFrame:
             return ' '.join(format(byte, '08b')
                             for byte in self.payload_data)
 
-    def __truncate_string(self, s):
-        return s[:self.MAX_OUTPUT_STRING_LENGTH] + "..." if len(s) > self.MAX_OUTPUT_STRING_LENGTH else s
+    def data_from_frame(self) -> list:
+        result = [self.__first_byte_from_frame()]
+
+        result = result + self.__payload_length_from_frame()
+
+        result = result + self.masking_key
+
+        result = result + list(self.__apply_masking(list(self.payload_data)))
+
+        return result
+
+    def __first_byte_from_frame(self):
+        result = 1 if self.fin else 0
+        result <<= 1
+        result += 1 if self.RSV1 else 0
+        result <<= 1
+        result += 1 if self.RSV2 else 0
+        result <<= 1
+        result += 1 if self.RSV3 else 0
+        result <<= 4
+        result += self.opcode
+        return result
+
+    def __payload_length_from_frame(self):
+        result = [1] if self.mask else [0]
+        result[0] <<= 7
+
+        if self.payload_length <= 125:
+            result[0] += self.payload_length
+        elif self.payload_length <= 65535:  # 16 unsigned integer limit
+            result[0] += 126
+            result += list(self.payload_length.to_bytes(2, 'big'))
+        elif self.payload_length <= 18446744073709551615:  # 64 unsigned integer limit
+            result[0] += 127
+            result += list(self.payload_length.to_bytes(8, 'big'))
+        else:
+            raise ValueError("payload lenght is too large for one frame!")
+
+        return result
 
     def __repr__(self):
         result = "Web Socket Frame:\n"
@@ -140,6 +179,9 @@ class WebSocketFrame:
             case 10: return "pong"
             case 11 | 12 | 13 | 14 | 15: return "reserved (control frame)"
             case _: return "unknown opcode (invalid)"
+
+    def __truncate_string(self, s):
+        return s[:self.MAX_OUTPUT_STRING_LENGTH] + "..." if len(s) > self.MAX_OUTPUT_STRING_LENGTH else s
 
     def __eq__(self, other):
         if isinstance(other, WebSocketFrame):
