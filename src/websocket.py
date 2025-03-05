@@ -1,4 +1,5 @@
 import numpy as np
+import socket
 
 
 class WebSocketFrame:
@@ -207,78 +208,170 @@ class WebSocketFrame:
 # LEGACY CODE - toto: fix it and implement recieve message and send message
 class WebSocket:
 
-    def __init__(self):
-        pass
+    STATE_OPEN = 1
+    STATE_CLOSING = 2
+    STATE_CLOSED = 3
 
-    def create_frames(self, data_in_bytes, is_mask, opcode, max_fragment_size=1024):
-        frames = []
+    def __init__(self,
+                 base_socket: socket.socket,
+                 buffer_size: int = 1024 * 1024,
+                 is_server: bool = False):
+        self.base_socket = base_socket
+        self.buffer_size = buffer_size
+        self.state = self.STATE_OPEN
+        self.is_server = is_server
+
+    def send_data(self, data_in_bytes, is_mask, opcode, max_fragment_size=1024, RSV=(False, False, False)):
+        if self.state == self.STATE_CLOSING or self.state == self.STATE_CLOSED:
+            # don't do anything for now
+            return
         total_length = len(data_in_bytes)
         start = 0
         first = True
+        masking_key = None
+
+        if opcode >= 8:
+            '''
+            All control frames MUST have a payload length of 125 bytes or less
+            and MUST NOT be fragmented.
+            '''
+            if total_length > 125:
+                raise ValueError(
+                    "Controll Frames must have a payload lenght of 125 bytes or less")
+
+            if is_mask or not self.is_server:
+                masking_key = np.random.randint(0, 255, 4)
+
+            frame = WebSocketFrame(True,
+                                   RSV[0],
+                                   RSV[1],
+                                   RSV[2],
+                                   current_opcode,
+                                   is_mask,
+                                   total_length,
+                                   masking_key,
+                                   data_in_bytes)
+
+            self.base_socket.send(frame.data_from_frame())
+            return
 
         while start < total_length:
+            if is_mask or not self.is_server:
+                masking_key = np.random.randint(0, 255, 4)
+
             end = min(start + max_fragment_size, total_length)
             fragment = data_in_bytes[start:end]
             is_last = end == total_length
 
             current_opcode = opcode if first else 0x0
 
-            frame = self.create_frame(
-                fragment, is_mask, current_opcode, is_last)
-            frames.append(frame)
+            frame = WebSocketFrame(is_last,
+                                   RSV[0],
+                                   RSV[1],
+                                   RSV[2],
+                                   current_opcode,
+                                   is_mask,
+                                   end - start + 1,
+                                   masking_key,
+                                   fragment)
+
+            self.base_socket.send(frame.data_from_frame())
 
             first = False
             start = end
 
-        return frames
+    def recieve_message(self):
+        full_data = []
+        first_frame = True
+        dummy_frame = WebSocketFrame()
+        while True:
+            data_in_bytes = self.base_socket.recv(self.buffer_size)
+            frame = WebSocketFrame.frame_from_data(data_in_bytes)
+            if first_frame:
+                first_frame = False
+                dummy_frame.opcode = frame.opcode
+                dummy_frame.payload_data = frame.payload_data
+            full_data += frame.payload_data
+            if frame.fin:
+                break
 
-    def create_frame(self, data_in_bytes, is_mask, opcode, is_last):
+        return self.__process_frame_acording_to_opcode(frame, full_data)
 
-        self.is_last = is_last
-        self.opcode = opcode
-        self.is_mask = is_mask
+    def __process_frame_acording_to_opcode(self, dummy_frame: WebSocketFrame, data_in_bytes):
+        match dummy_frame.opcode:
+            case 0x8:
+                return self.__handle_receive_close(dummy_frame)
+            case 0x9:
+                return self.__handle_receive_ping(dummy_frame)
+            case 0xA:
+                return self.__handle_receive_pong(dummy_frame)
 
-        frame = []
+            case 0x1:
+                return self.__handle_receive_text(data_in_bytes)
 
-        frame.append(self._create_first_byte())
+            case 0x2:
+                return self.__handle_receive_binary(data_in_bytes)
 
-        frame + self._create_payload_length_bytes(data_in_bytes)
+            case _:
+                raise ValueError("undefined opcode")
 
-        if is_mask:
-            masking_key = np.random.randint(0, 2**32)
-            byte_array = masking_key.to_bytes(4, byteorder='big')
-            frame + byte_array
+    def __handle_receive_close(self, frame: WebSocketFrame):
+        status_code = int.from_bytes(frame.payload_data[:2], 'big')
 
-        if is_mask:
-            data_in_bytes = self._parse_payload(data_in_bytes)
+        print(f"WebSocket recieved close frame\nStatus code: {status_code}")
 
-        frame += data_in_bytes
+        if frame.payload_length > 2:
+            reason = frame.payload_data[2:].decode("utf-8")
 
-        return (frame)
-
-    def _create_first_byte(self):
-        result = 128 if self.is_last else 0
-        result += self.opcode
-
-    def _create_payload_length_bytes(self, data_in_bytes):
-        frame_part = []
-        if self.is_mask:
-            first_byte = 128
+        if self.state == self.STATE_CLOSING:
+            self.state = self.STATE_CLOSED
+        elif self.state == self.STATE_OPEN:
+            self.state = self.STATE_CLOSING
+            response_frame = WebSocketFrame(True,
+                                            False,
+                                            False,
+                                            False,
+                                            0x8,
+                                            False,
+                                            2,
+                                            None,
+                                            frame.payload_data[:2])
+            self.base_socket.send(response_frame.data_from_frame())
+            self.state = self.STATE_CLOSED
         else:
-            first_byte = 0
-        if len(data_in_bytes) < 126:
-            first_byte += len(data_in_bytes)
-            frame_part.append(first_byte)
-            return frame_part
-        if len(data_in_bytes) < 65535:
-            first_byte += 126
-            byte_array = len(data_in_bytes).to_bytes(2, byteorder='big')
-            return frame_part + byte_array
+            '''
+            If a client and server both send a Close message at the same time,
+            both endpoints will have sent and received a Close message and should
+            consider the WebSocket connection closed and close the underlying TCP
+            connection.
+            '''
+            self.base_socket.close()
 
-        first_byte += 127
-        byte_array = len(data_in_bytes).to_bytes(8, byteorder='big')
-        return frame_part + byte_array
+        '''
+        After both sending and receiving a Close message, an endpoint
+        considers the WebSocket connection closed and MUST close the
+        underlying TCP connection.  The server MUST close the underlying TCP
+        connection immediately; the client SHOULD wait for the server to
+        close the connection but MAY close the connection at any time after
+        sending and receiving a Close message, e.g., if it has not received a
+        TCP Close from the server in a reasonable time period.
+        '''
+        if self.is_server:
+            self.base_socket.close()
 
-    def recieve_message(data_in_bytes):
-        frame = WebSocketFrame()
-        frame.frame_from_data(data_in_bytes)
+        return reason
+
+    def __handle_receive_ping(self, frame: WebSocketFrame):
+        self.send_data(
+            frame.payload_data, not self.is_server, 0xA
+        )
+        return f"Received Ping with data: {frame.payload_data}"
+
+    def __handle_receive_pong(self, frame: WebSocketFrame):
+        return f"Received Pong with data: {frame.payload_data}"
+
+    def __handle_receive_text(self, data_in_bytes):
+        return data_in_bytes.decode("utf-8")
+
+    def __handle_receive_binary(self, data_in_bytes):
+        return data_in_bytes
