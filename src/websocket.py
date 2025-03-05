@@ -1,5 +1,6 @@
 import numpy as np
 import socket
+import logging
 
 
 class WebSocketFrame:
@@ -208,6 +209,7 @@ class WebSocketFrame:
 # LEGACY CODE - toto: fix it and implement recieve message and send message
 class WebSocket:
 
+    STATE_ESTABLISHING = 0
     STATE_OPEN = 1
     STATE_CLOSING = 2
     STATE_CLOSED = 3
@@ -215,12 +217,44 @@ class WebSocket:
     def __init__(self,
                  base_socket: socket.socket,
                  buffer_size: int = 1024 * 1024,
-                 is_server: bool = False):
+                 is_server: bool = False,
+                 server_logging_file="logs/server_logs.log"):
         self.base_socket = base_socket
         self.buffer_size = buffer_size
         self.state = self.STATE_OPEN
         self.is_server = is_server
+        if is_server:
+            logger = logging.getLogger("server_logger")
+            logger.setLevel(logging.DEBUG)
 
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+
+            file_handler = logging.FileHandler(server_logging_file)
+            file_handler.setLevel(logging.DEBUG)
+
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            console_handler.setFormatter(formatter)
+            file_handler.setFormatter(formatter)
+
+            logger.addHandler(console_handler)
+            logger.addHandler(file_handler)
+
+            logger.debug("Starting new websocket instance for the server!")
+
+            self.logger = logger
+
+    def __catch_protocol_error(function):
+        def decorated_function(self, *arg, **kw):
+            try:
+                function(self, *arg, **kw)
+            except Exception as e:
+                # protocol error
+                self.__fail_websocket_connection(1002, e)
+        return decorated_function
+
+    @__catch_protocol_error
     def send_data(self, data_in_bytes, is_mask, opcode, max_fragment_size=1024, RSV=(False, False, False)):
         if self.state == self.STATE_CLOSING or self.state == self.STATE_CLOSED:
             # don't do anything for now
@@ -236,8 +270,10 @@ class WebSocket:
             and MUST NOT be fragmented.
             '''
             if total_length > 125:
-                raise ValueError(
-                    "Controll Frames must have a payload lenght of 125 bytes or less")
+                if self.is_server:
+                    self.logger.error(f"While trying to send controll frame of opcode {opcode} " +
+                                      f"got payload_lenght longer than 125 ({total_length}), which is prohibited")
+                    return
 
             if is_mask or not self.is_server:
                 masking_key = np.random.randint(0, 255, 4)
@@ -297,6 +333,7 @@ class WebSocket:
 
         return self.__process_frame_acording_to_opcode(frame, full_data)
 
+    @__catch_protocol_error
     def __process_frame_acording_to_opcode(self, dummy_frame: WebSocketFrame, data_in_bytes):
         match dummy_frame.opcode:
             case 0x8:
@@ -322,6 +359,8 @@ class WebSocket:
 
         if frame.payload_length > 2:
             reason = frame.payload_data[2:].decode("utf-8")
+        else:
+            reason = ""
 
         if self.state == self.STATE_CLOSING:
             self.state = self.STATE_CLOSED
@@ -345,7 +384,7 @@ class WebSocket:
             consider the WebSocket connection closed and close the underlying TCP
             connection.
             '''
-            self.base_socket.close()
+            self.__clean_closure_socket()
 
         '''
         After both sending and receiving a Close message, an endpoint
@@ -357,7 +396,7 @@ class WebSocket:
         TCP Close from the server in a reasonable time period.
         '''
         if self.is_server:
-            self.base_socket.close()
+            self.__clean_closure_socket()
 
         return reason
 
@@ -370,8 +409,57 @@ class WebSocket:
     def __handle_receive_pong(self, frame: WebSocketFrame):
         return f"Received Pong with data: {frame.payload_data}"
 
+    @__catch_protocol_error
     def __handle_receive_text(self, data_in_bytes):
         return data_in_bytes.decode("utf-8")
 
     def __handle_receive_binary(self, data_in_bytes):
         return data_in_bytes
+
+    def force_close(self):
+        self.state = self.STATE_CLOSED
+        self.base_socket.close()
+
+    def start_closing_handshake(self, code: int = 1000, reason: str = ""):
+        self.state = self.STATE_CLOSING
+
+        close_frame = WebSocketFrame(
+            opcode=0x8,
+            mask=not self.is_server,
+            masking_key=np.random.randint(0, 255, 4),
+            payload_length=2 + len(reason),
+            payload_data=list(code.to_bytes(2, 'big')) +
+            list(reason.encode("utf-8"))
+        )
+
+        self.base_socket.send(close_frame.data_from_frame())
+
+    def __clean_closure_socket(self):
+        self.base_socket.shutdown(socket.SHUT_WR)
+
+        while self.base_socket.recv(self.buffer_size) != 0:
+            continue
+
+        self.base_socket.close()
+
+    def __fail_websocket_connection(self, code: int, reason: str):
+        if self.state == self.STATE_ESTABLISHING:
+            if self.is_server:
+                '''
+                [...] and SHOULD log the problem
+                '''
+                self.logger.error(
+                    f"Failed to establish WebSocket Connection! Reason: {reason}")
+                self.state = self.STATE_CLOSED
+                self.__clean_closure_socket()
+            else:
+                '''
+                [...] and MAY report the problem to the user (which would be 
+                especially useful for developers) in an appropriate manner.
+                '''
+                print(
+                    f"Failed to establish WebSocket Connection! Reason: {reason}")
+                self.state = self.STATE_CLOSED
+                self.__clean_closure_socket()
+        else:
+            self.start_closing_handshake(code, reason)
