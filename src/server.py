@@ -7,7 +7,7 @@ import select
 
 from ws_util import *
 
-from websocket import WebSocketFrame
+from websocket import WebSocket, WebSocketFrame
 
 TCP_IP = '127.0.0.1'
 TCP_PORT = 5006
@@ -22,6 +22,8 @@ DEFAULT_HTTP_RESPONSE = (
 <H1>200 OK</H1>\r\n
 Welcome to the default.\r\n
 </BODY></HTML>\r\n\r\n''')
+
+# legacy: need fixing to multithreading per socket to remove need of select, then everything should work
 
 
 def main():
@@ -75,7 +77,7 @@ def handle_websocket_message(client_socket, input_sockets, ws_sockets):
         f"Recieved Websocket Message!\n\n{websocket}")
 
 
-def handle_request(client_socket: socket.socket, input_sockets: list[socket.socket], ws_sockets: list[socket.socket]):
+def handle_request(client_socket: socket.socket, input_sockets: list[socket.socket], ws_sockets: list[WebSocket]):
 
     print(
         f"Handling request from client socket: {client_socket.fileno()}")
@@ -107,16 +109,12 @@ def handle_request(client_socket: socket.socket, input_sockets: list[socket.sock
     if target == WS_ENDPOINT:
         print('request to ws endpoint')
 
-        if is_valid_ws_handshake_request(method, http_version, headers_map):
-            handle_ws_handshake_request(
-                client_socket,
-                ws_sockets,
-                headers_map
-            )
-        else:
-            client_socket.send(b'HTTP/1.1 400 Bad Request')
-            close_socket(client_socket, input_sockets, ws_sockets)
-        return
+        ws_socket = WebSocket.WebSocket_server(
+            client_socket, method, http_version, headers_map)
+
+        if ws_socket is not None:
+            ws_sockets.append(ws_socket)
+            return
 
     client_socket.send(b'HTTP/1.1 200 OK\r\n\r\n' + DEFAULT_HTTP_RESPONSE)
     close_socket(client_socket, input_sockets, ws_sockets)
@@ -132,25 +130,6 @@ def parse_request(request):
         [header, value] = header_entry.split(': ')
         headers_map[header.lower()] = value
     return method, target, http_version, headers_map
-
-
-def handle_ws_handshake_request(client_socket: socket.socket, ws_sockets: list[socket.socket], headers_map: dict[str]):
-    ws_sockets.append(client_socket)
-
-    sec_websocket_accept_value = generate_sec_websocket_accept(
-        headers_map.get('sec-websocket-key'))
-
-    websocket_response = ''
-    websocket_response += 'HTTP/1.1 101 Switching Protocols\r\n'
-    websocket_response += 'Upgrade: websocket\r\n'
-    websocket_response += 'Connection: Upgrade\r\n'
-    websocket_response += (
-        'Sec-WebSocket-Accept: ' + sec_websocket_accept_value.decode() + '\r\n')
-    websocket_response += '\r\n'
-
-    print('\nresponse:\n', websocket_response)
-
-    client_socket.send(websocket_response.encode())
 
 
 def close_socket(client_socket, input_sockets, ws_sockets):
