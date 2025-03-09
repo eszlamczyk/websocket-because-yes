@@ -5,9 +5,9 @@ HTTP server to listen on a port and respond
 import socket
 import select
 
-from src.ws_util import *
+from ws_util import *
 
-from src.websocket import WebSocketFrame
+from websocket import WebSocketFrame
 
 TCP_IP = '127.0.0.1'
 TCP_PORT = 5006

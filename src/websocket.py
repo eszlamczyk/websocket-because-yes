@@ -1,6 +1,9 @@
 import numpy as np
 import socket
 import logging
+from urllib.parse import urlparse
+import base64
+import hashlib
 
 
 class WebSocketFrame:
@@ -206,7 +209,6 @@ class WebSocketFrame:
         return False
 
 
-# LEGACY CODE - toto: fix it and implement recieve message and send message
 class WebSocket:
 
     STATE_ESTABLISHING = 0
@@ -244,6 +246,90 @@ class WebSocket:
             logger.debug("Starting new websocket instance for the server!")
 
             self.logger = logger
+
+    @classmethod
+    def WebSocket_client(uri: str, buffer_size=1024 * 1024):
+        def parse_server_response(response):
+            headers_map = {}
+
+            split_response = response.split('\r\n\r\n')[0].split('\r\n')
+            [http_version, code, message] = split_response[0].split(' ')
+            headers = split_response[1:]
+            for header_entry in headers:
+                [header, value] = header_entry.split(': ')
+                headers_map[header.lower()] = value
+
+            return http_version, code, message, headers_map
+
+        def fail_websocket_connection():
+            nonlocal sock
+            sock.close()
+
+        def generate_sec_websocket_accept(sec_websocket_key):
+
+            MAGIC_WEBSOCKET_UUID_STRING = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+
+            combined = sec_websocket_key + MAGIC_WEBSOCKET_UUID_STRING
+            hashed_combined_string = hashlib.sha1(combined.encode())
+            encoded = base64.b64encode(hashed_combined_string.digest())
+            return encoded
+
+        websocket_uri = WebSocketURI(uri)
+
+        if websocket_uri.secure:
+            raise NotImplemented
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect((websocket_uri.host, websocket_uri.port))
+
+        sec_websocket_key = base64.b64encode(
+            bytes(np.random.randint(0, 255, 16).tolist()))
+
+        request = f'''GET {websocket_uri.resource_name} HTTP/1.1
+        Host: {websocket_uri.host}{":" + websocket_uri.port if websocket_uri.port not in [80, 443] else ""}
+        Connection: keep-alive, Upgrade
+        Upgrade: "websocket"
+        Sec-WebSocket-Key: {sec_websocket_key}
+        Sec-WebSocket-Version: 13
+'''
+        sock.send(request.encode('utf-8'))
+
+        response = sock.recv(buffer_size)
+
+        http_version, code, message, headers_map = parse_server_response(
+            response.decode())
+
+        if int(code) != 101:
+            fail_websocket_connection()
+            raise RuntimeError(f"Server responded with {code}: {message}")
+
+        if "upgrade" not in headers_map or headers_map.get("upgrade").lower() != "websocket":
+            fail_websocket_connection()
+            raise RuntimeError(
+                f"Inccorect upgrade header/upgrade header not found {response.decode()}")
+
+        if "connection" not in headers_map or "connection" not in headers_map.get("connection").lower():
+            fail_websocket_connection()
+            raise RuntimeError(
+                f"Inccorect connection header/connection header not found {response.decode()}")
+
+        if ("sec-websocket-accept" not in headers_map or
+                headers_map.get("sec-websocket-accept") != generate_sec_websocket_accept(sec_websocket_key).trim()):
+            raise RuntimeError(
+                f"Incorrect sec-websocket-accept header/sec-websocket-accept header not found {response.decode()}"
+            )
+
+        if "sec-websocket-extensions" in headers_map:
+            raise NotImplemented
+
+        if "sec-websocket-protocol" in headers_map:
+            raise NotImplemented
+
+        return WebSocket(sock, buffer_size)
+
+    @classmethod
+    def WebSocket_server(buffer_size=1024*1024):
+        pass
 
     def __catch_protocol_error(function):
         def decorated_function(self, *arg, **kw):
@@ -463,3 +549,38 @@ class WebSocket:
                 self.__clean_closure_socket()
         else:
             self.start_closing_handshake(code, reason)
+
+
+class WebSocketURI:
+    def __init__(self, uri: str):
+        self.uri = uri
+        self.scheme = None
+        self.host = None
+        self.port = None
+        self.path = ""
+        self.query = ""
+        self.secure = False
+        self.resource_name = ""
+        self.parse_uri()
+
+    def parse_uri(self):
+        parsed = urlparse(self.uri)
+
+        if parsed.scheme not in ["ws", "wss"]:
+            raise ValueError("Invalid scheme. Must be 'ws' or 'wss'")
+
+        self.scheme = parsed.scheme
+        self.host = parsed.hostname
+        self.port = parsed.port or (443 if self.scheme == "wss" else 80)
+        self.path = parsed.path or "/"
+        self.query = parsed.query
+        self.secure = self.scheme.lower() == "wss"
+
+        self.resource_name = self.path
+        if self.query:
+            self.resource_name += "?" + self.query
+
+    def __repr__(self):
+        return (f"WebSocketURI(uri='{self.uri}', scheme='{self.scheme}', host='{self.host}', "
+                f"port={self.port}, path='{self.path}', query='{self.query}', "
+                f"secure={self.secure}, resource_name='{self.resource_name}')")
